@@ -1,0 +1,20 @@
+services:
+  blazar:
+    image: __ECR_IMAGE__
+    container_name: blazar
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3030:3030"
+    env_file:
+      - .env
+    volumes:
+      - /var/lib/blazar/queue:/var/lib/blazar/queue
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 32m
+    cpus: "0.2"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

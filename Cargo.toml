@@ -1,0 +1,40 @@
+[package]
+name = "blazar"
+version = "0.1.0"
+edition = "2021"
+description = "Rate-limited mail relay from the void — cookie-free, blazing-fast contact-form backend in Rust"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Shaddar91/blazar"
+readme = "README.md"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower_governor = "0.8"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "ring", "webpki-roots", "builder"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+subtle = "2"
+fs2 = "0.4"
+
+[dev-dependencies]
+axum-test = "20"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -35,3 +35,50 @@ id_rsa*
 id_ed25519*
 secrets/
 *.secret
+
+#>>> baseline gitignore (managed by infrastructure-automation) >>>
+#Canonical baseline .gitignore
+#Owner: infrastructure-automation/templates/gitignore/baseline.gitignore
+#Synced into each repo via scripts/sync-gitignore-baseline.sh inside a marker block
+#Per project policy: NEVER commit any .env variant. Includes .env.example by user request
+#  ("we never want to commit any .env files or .env file as an example or anything similar").
+#  If a specific repo legitimately needs .env.example committed, opt out by adding the
+#  negation `!.env.example` OUTSIDE the managed marker block in that repo's .gitignore.
+
+#Environment / secrets — never commit any of these
+.env
+.env.*
+*.env
+.envrc
+
+#Private credential material
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.secret
+secrets/
+credentials
+credentials.json
+
+#Terraform variable files often hold secrets — commit *.tfvars.example only
+*.tfvars
+!*.tfvars.example
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+#Common OS / editor noise (cross-language)
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+#Log files
+*.log
+#<<< baseline gitignore (managed by infrastructure-automation) <<<

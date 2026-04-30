@@ -4,14 +4,15 @@
 //! which are themselves stubs today. The whole chain compiles end-to-end so
 //! wiring tests are possible before real logic is filled in.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, sync::OnceLock};
 
 use axum::{
     extract::{ConnectInfo, State},
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
+use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::{
@@ -21,6 +22,20 @@ use crate::{
     models::{Message, SendRequest},
     nonce, queue, smtp,
 };
+
+//Per-recipient auto-reply throttle: visitor email -> last successful send time.
+//In-memory by design (24h window, no DB) — restart resets the cap, which is
+//acceptable because the daily-cap and per-IP rate-limits already bound abuse.
+fn auto_reply_history() -> &'static DashMap<String, DateTime<Utc>> {
+    static HISTORY: OnceLock<DashMap<String, DateTime<Utc>>> = OnceLock::new();
+    HISTORY.get_or_init(DashMap::new)
+}
+
+fn auto_reply_recently_sent(email: &str, now: DateTime<Utc>) -> bool {
+    auto_reply_history()
+        .get(email)
+        .is_some_and(|prev| now.signed_duration_since(*prev) < Duration::hours(24))
+}
 
 pub async fn send(
     State(cfg): State<Arc<Config>>,
@@ -81,10 +96,48 @@ pub async fn send(
 
     // 5. Send via configured SMTP backend. The backend is built here from
     //    config — a later component may hoist this into application state.
-    let backend = smtp::LoopbackSmtpBackend::from_config(&cfg);
+    let backend = smtp::LoopbackSmtpBackend::from_config(&cfg).map_err(AppError::Internal)?;
     smtp::SmtpBackend::send(&backend, &msg)
         .await
         .map_err(AppError::Internal)?;
+
+    // 6. Fire-and-forget auto-reply to the visitor. Errors are logged but
+    //    never propagated — a slow SMTP call or invalid visitor address must
+    //    not fail the inquiry POST. Per-recipient 24h throttle suppresses
+    //    backscatter abuse without needing a DB.
+    if backend.auto_reply_enabled {
+        let visitor_email = msg.email.clone();
+        let visitor_name = msg.name.clone();
+        let inquiry_id = msg.id.chars().take(8).collect::<String>();
+        let now = Utc::now();
+        if auto_reply_recently_sent(&visitor_email, now) {
+            tracing::info!(
+                inquiry_id = %inquiry_id,
+                "auto-reply throttled (recent send within 24h)"
+            );
+        } else {
+            //SendRequest carries no `topics` field today; pass an empty slice
+            //so the template renders with the empty-topics branch.
+            let topics: Vec<String> = Vec::new();
+            tokio::spawn(async move {
+                match backend
+                    .send_auto_reply(&visitor_email, &visitor_name, &topics, &inquiry_id)
+                    .await
+                {
+                    Ok(()) => {
+                        auto_reply_history().insert(visitor_email, Utc::now());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            inquiry_id = %inquiry_id,
+                            error = ?e,
+                            "auto-reply send failed (suppressed)"
+                        );
+                    }
+                }
+            });
+        }
+    }
 
     Ok(StatusCode::ACCEPTED)
 }

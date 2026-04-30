@@ -118,7 +118,13 @@ fn spawn_midnight_flush(cfg: Arc<Config>) {
                 }
             };
             tracing::info!(count = drained.len(), "midnight flush start");
-            let backend = LoopbackSmtpBackend::from_config(&cfg);
+            let backend = match LoopbackSmtpBackend::from_config(&cfg) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!(error = ?e, "midnight flush: smtp backend init failed");
+                    continue;
+                }
+            };
             for msg in drained {
                 if let Err(e) = SmtpBackend::send(&backend, &msg).await {
                     tracing::error!(id = %msg.id, error = ?e, "midnight send failed — re-enqueueing");

@@ -39,6 +39,20 @@ pub struct Config {
     /// `X-Origin-Verify` header does not match (silent 204). When `None`,
     /// the layer is a no-op so local dev works without the secret.
     pub cloudfront_verify_secret: Option<String>,
+
+    /// When true, after a successful inquiry send the handler spawns a
+    /// fire-and-forget auto-reply to the visitor. Defaults to `true` if
+    /// `AUTO_REPLY_ENABLED` is unset; set to `false` to disable without
+    /// removing the template files.
+    pub auto_reply_enabled: bool,
+    /// `From:` address for the auto-reply (e.g. `noreply@cloud-lord.com`).
+    /// Required when `auto_reply_enabled` — fail-loud on startup if missing.
+    pub auto_reply_from: String,
+    /// On-disk path to the HTML auto-reply template. Loaded once at startup;
+    /// editing the file requires a process restart to take effect.
+    pub auto_reply_html_path: String,
+    /// On-disk path to the plain-text auto-reply template (sibling of HTML).
+    pub auto_reply_text_path: String,
 }
 
 impl Config {
@@ -63,6 +77,20 @@ impl Config {
             .parse()
             .context("PER_IP_REPLENISH_SECONDS must be a u64")?;
 
+        let auto_reply_enabled = std::env::var("AUTO_REPLY_ENABLED")
+            .ok()
+            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+            .unwrap_or(true);
+        let (auto_reply_from, auto_reply_html_path, auto_reply_text_path) = if auto_reply_enabled {
+            (
+                env_var("AUTO_REPLY_FROM")?,
+                env_var("AUTO_REPLY_HTML_PATH")?,
+                env_var("AUTO_REPLY_TEXT_PATH")?,
+            )
+        } else {
+            (String::new(), String::new(), String::new())
+        };
+
         Ok(Config {
             bind_addr,
             cors_origin: env_var("CORS_ORIGIN")?,
@@ -80,6 +108,10 @@ impl Config {
             cloudfront_verify_secret: std::env::var("CLOUDFRONT_VERIFY_SECRET")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            auto_reply_enabled,
+            auto_reply_from,
+            auto_reply_html_path,
+            auto_reply_text_path,
         })
     }
 }

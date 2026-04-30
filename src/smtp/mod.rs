@@ -85,6 +85,7 @@ impl LoopbackSmtpBackend {
         to: &str,
         name: &str,
         topics: &[String],
+        message_preview: &str,
         inquiry_id: &str,
     ) -> anyhow::Result<()> {
         if !self.auto_reply_enabled {
@@ -94,27 +95,41 @@ impl LoopbackSmtpBackend {
         let display_name = if name.trim().is_empty() { "there" } else { name.trim() };
         let topics_joined = topics.join(", ");
         let topics_html = render_topics_html(topics);
+        let message_trimmed = message_preview.trim();
+        let message_text = message_trimmed.to_string();
+        let message_html = html_escape(message_trimmed).replace('\n', "<br />");
         let current_year = chrono::Utc::now().year().to_string();
         let site_url = "https://cloud-lord.com";
         let contact_email = "engineering@cloud-lord.com";
         let reply_eta = "within 24 hours";
 
-        let html = self
-            .auto_reply_html
+        let topics_present = !topics.is_empty();
+        let message_present = !message_trimmed.is_empty();
+        let is_present = |var: &str| -> bool {
+            match var {
+                "topics" => topics_present,
+                "message_preview" => message_present,
+                _ => true,
+            }
+        };
+
+        let html_with_blocks = strip_conditional_blocks(&self.auto_reply_html, &is_present);
+        let html = html_with_blocks
             .replace("{{name}}", display_name)
             .replace("{{topics_html}}", &topics_html)
             .replace("{{topics}}", &topics_joined)
+            .replace("{{message_preview}}", &message_html)
             .replace("{{reply_eta}}", reply_eta)
             .replace("{{inquiry_id}}", inquiry_id)
             .replace("{{site_url}}", site_url)
             .replace("{{contact_email}}", contact_email)
             .replace("{{current_year}}", &current_year);
 
-        let topics_present = !topics.is_empty();
-        let text_with_blocks = strip_handlebars_if(&self.auto_reply_text, "topics", topics_present);
+        let text_with_blocks = strip_conditional_blocks(&self.auto_reply_text, &is_present);
         let text = text_with_blocks
             .replace("{{name}}", display_name)
             .replace("{{topics}}", &topics_joined)
+            .replace("{{message_preview}}", &message_text)
             .replace("{{reply_eta}}", reply_eta)
             .replace("{{inquiry_id}}", inquiry_id)
             .replace("{{site_url}}", site_url)
@@ -207,37 +222,42 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-//Minimal Handlebars `{{#if X}}...{{/if}}` block handler for plain-text templates.
-//If `present` is true, strip just the marker lines and keep the inner content;
-//if false, drop the markers AND their content. Block names other than `var`
-//are left untouched. Nested blocks are not supported (templates don't need them).
-fn strip_handlebars_if(input: &str, var: &str, present: bool) -> String {
-    let open = format!("{{{{#if {var}}}}}");
+//Minimal Handlebars `{{#if VAR}}...{{/if}}` block handler shared by html and
+//text templates. For each block, `is_present(VAR)` decides: true → strip just
+//the marker lines and keep the inner content; false → drop markers AND their
+//content. Unknown variables (no map entry) should default to `true` in the
+//caller's closure so unrelated blocks pass through untouched. Nested blocks
+//are not supported — templates don't need them.
+fn strip_conditional_blocks(input: &str, is_present: &dyn Fn(&str) -> bool) -> String {
+    let open_prefix = "{{#if ";
     let close = "{{/if}}";
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
-    while let Some(start) = rest.find(&open) {
+    while let Some(start) = rest.find(open_prefix) {
         out.push_str(&rest[..start]);
-        let after_open = &rest[start + open.len()..];
+        let after_prefix = &rest[start + open_prefix.len()..];
+        let Some(name_end) = after_prefix.find("}}") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let var = after_prefix[..name_end].trim();
+        let after_open = &after_prefix[name_end + 2..];
         let Some(end) = after_open.find(close) else {
-            //Unclosed block — leave the rest verbatim and bail.
             out.push_str(&rest[start..]);
             return out;
         };
         let inner = &after_open[..end];
-        if present {
+        let after_close = &after_open[end + close.len()..];
+        if is_present(var) {
             //Trim a single leading/trailing newline introduced by the marker lines
             //so the kept content sits flush against the surrounding text.
             let inner = inner.strip_prefix('\n').unwrap_or(inner);
             let inner = inner.strip_suffix('\n').unwrap_or(inner);
             out.push_str(inner);
-            rest = &after_open[end + close.len()..];
+            rest = after_close;
         } else {
-            rest = &after_open[end + close.len()..];
             //Eat one trailing newline after `{{/if}}` so dropping the block doesn't leave a blank line.
-            if let Some(stripped) = rest.strip_prefix('\n') {
-                rest = stripped;
-            }
+            rest = after_close.strip_prefix('\n').unwrap_or(after_close);
         }
     }
     out.push_str(rest);
@@ -271,21 +291,45 @@ mod tests {
     #[test]
     fn handlebars_if_keeps_inner_when_present() {
         let tpl = "before\n{{#if topics}}\nTopics: {{topics}}\n{{/if}}\nafter";
-        let out = strip_handlebars_if(tpl, "topics", true);
+        let out = strip_conditional_blocks(tpl, &|v| v == "topics");
         assert_eq!(out, "before\nTopics: {{topics}}\nafter");
     }
 
     #[test]
     fn handlebars_if_drops_block_when_absent() {
         let tpl = "before\n{{#if topics}}\nTopics: {{topics}}\n{{/if}}\nafter";
-        let out = strip_handlebars_if(tpl, "topics", false);
+        let out = strip_conditional_blocks(tpl, &|_| false);
         assert_eq!(out, "before\nafter");
     }
 
     #[test]
     fn handlebars_if_unrelated_block_untouched() {
         let tpl = "{{#if other}}keep me{{/if}}";
-        let out = strip_handlebars_if(tpl, "topics", false);
-        assert_eq!(out, tpl);
+        //Default-true for any var the caller doesn't recognize: the block stays.
+        let out = strip_conditional_blocks(tpl, &|v| v != "topics");
+        assert_eq!(out, "keep me");
+    }
+
+    #[test]
+    fn handlebars_if_handles_multiple_distinct_vars() {
+        let tpl = "A {{#if topics}}T{{/if}} B {{#if message_preview}}M{{/if}} C";
+        let out = strip_conditional_blocks(tpl, &|v| match v {
+            "topics" => true,
+            "message_preview" => false,
+            _ => true,
+        });
+        assert_eq!(out, "A T B  C");
+    }
+
+    #[test]
+    fn handlebars_if_drops_html_block_when_absent() {
+        //Mirror the shape of the actual HTML template — a multi-line <tr> wrapped
+        //by the markers — and confirm the dropped block leaves no orphaned tags.
+        let tpl = "<table>\n  {{#if message_preview}}\n  <tr><td>{{message_preview}}</td></tr>\n  {{/if}}\n</table>";
+        let out = strip_conditional_blocks(tpl, &|_| false);
+        assert!(!out.contains("<tr>"));
+        assert!(!out.contains("{{message_preview}}"));
+        assert!(!out.contains("{{#if"));
+        assert!(!out.contains("{{/if}}"));
     }
 }

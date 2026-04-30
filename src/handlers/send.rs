@@ -119,9 +119,16 @@ pub async fn send(
             //SendRequest carries no `topics` field today; pass an empty slice
             //so the template renders with the empty-topics branch.
             let topics: Vec<String> = Vec::new();
+            let message_preview = msg.body.clone();
             tokio::spawn(async move {
                 match backend
-                    .send_auto_reply(&visitor_email, &visitor_name, &topics, &inquiry_id)
+                    .send_auto_reply(
+                        &visitor_email,
+                        &visitor_name,
+                        &topics,
+                        &message_preview,
+                        &inquiry_id,
+                    )
                     .await
                 {
                     Ok(()) => {
